@@ -1,32 +1,60 @@
 use std::thread;
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, Shutdown};
 use std::io::{Read, Write};
 use std::str::from_utf8;
+use std::fs::File;
+use std::str;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use schnorr_fun::{
+    fun::{marker::*, Scalar, nonce},
+    Schnorr,
+    Message
+};
+
+use sha2::Sha256;
+use rand::rngs::ThreadRng;
+
 static CHECK: AtomicU8 = AtomicU8::new(0);
 
-fn listen_to_client(mut stream: TcpStream) {
-    let msg : &[u8; 16]= b"Hello from node4";
-    // while match stream.read(&mut data) {
-    //     Ok(size) => {
-    //         // echo everything!
-    //         stream.write(&msg[0..size-1]).unwrap();
-    //         true
-    //     },
-    //     Err(_) => {
-    //         println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
-    //         stream.shutdown(Shutdown::Both).unwrap();
-    //         false
-    //     }
-    // } {}
+fn create_sign(sk: String) -> String
+{
+    let id = "444";
 
-    stream.write(msg).unwrap();
+    return id.to_string()+" "+&sk;
 }
 
-fn handle_server(node4_port: u32) {
-   // println!("server node4");
+fn communicate_to_client(mut stream: TcpStream, sk: String) {
+
+    let mut data = [0 as u8; 50]; // using 50 byte buffer
+    
+    while match stream.read(&mut data) {
+        Ok(size) => {
+            let imcoing_message = str::from_utf8(&data[0..size]).unwrap();
+
+            println!("{}", imcoing_message);
+
+            let sk1 = sk.clone();
+            let plaintext = create_sign(sk1)+ " "+ "Hello from node4";
+
+            let msg : &[u8]= plaintext.as_bytes();
+    
+            stream.write(msg).unwrap();
+            true
+        },
+        Err(_) => {
+            println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
+            stream.shutdown(Shutdown::Both).unwrap();
+            false
+        }
+    } {}
+
+
+    
+}
+
+fn handle_server(node4_port: u32, sk: String) {
     let anycast = String::from("0.0.0.0:");
 
     let address = [anycast.to_string(), node4_port.to_string()].join("");
@@ -35,12 +63,13 @@ fn handle_server(node4_port: u32) {
     // accept connections and process them, spawning a new thread for each one
     println!("Server node4 listening on port {}", node4_port);
     for stream in listener.incoming() {
+        let sk1 = sk.clone();
         match stream {
             Ok(stream) => {
                 println!("New connection: {}", stream.peer_addr().unwrap());
                 thread::spawn(move|| {
                     // connection succeeded
-                    listen_to_client(stream)
+                    communicate_to_client(stream, sk1)
                 });
             }
             Err(e) => {
@@ -55,36 +84,27 @@ fn handle_server(node4_port: u32) {
 }
 
 
-fn match_tcp_client(address: String, node_port: u32)
+fn match_tcp_client(address: String, node_port: u32, pubkeys: Vec<String>)
 {
     match TcpStream::connect(address) {
         Ok(mut stream) => {
-           // println!("Successfully connected to server by node4 in port {}", node_port);
 
-            let msg : &[u8; 16]= b"Hello from node4";
+            let msg = b"Hello from node4!";
 
             stream.write(msg).unwrap();
-            println!("Sent Hello from node4, awaiting reply...");
-
+          
             let mut data = [0 as u8; 16]; // using 16 byte buffer
             match stream.read_exact(&mut data) {
                 Ok(_) => {
-                    if &data == msg {
-                        println!("Reply is echoed");
-                        
-
-                    } else {
-                        let text = from_utf8(&data).unwrap();
-                        println!("Reply: {} to node4", text);
-                        CHECK.store(1, Ordering::Relaxed);
-
-                    }
+                    let text = from_utf8(&data).unwrap();
+                    println!("Reply: {} to node4", text);
+                    CHECK.store(1, Ordering::Relaxed);
                 },
                 Err(e) => {
                     println!("Failed to receive data: {}", e);
                     CHECK.store(0, Ordering::Relaxed);
 
-                    handle_client( node_port);
+                    handle_client( node_port, pubkeys);
                 }
             }
         },
@@ -93,19 +113,17 @@ fn match_tcp_client(address: String, node_port: u32)
             
         }
     }
-   // println!("Terminated.");
-    // process::exit(0x0100);
+
 }
 
-fn handle_client(node_port: u32) {
+fn handle_client(node_port: u32, pubkeys: Vec<String>) {
 
     if CHECK.load(Ordering::Relaxed)==0 
     {
 
-       // println!("client node4");
         let localhost = String::from("localhost:");
 
-        match_tcp_client([localhost.to_string(), node_port.to_string()].join(""), node_port);
+        match_tcp_client([localhost.to_string(), node_port.to_string()].join(""), node_port, pubkeys);
 
 
     }
@@ -115,30 +133,35 @@ fn handle_client(node_port: u32) {
 
 
 // init function
-pub fn initiate_node4(random_number: u32, node_port_start: u32) {
+pub fn initiate_node4(random_number: u32, node_port_start: u32, pubkeys:&mut Vec<String>) {
     
+    let mut file = File::open("./node4_sk.txt").expect("cant open the file");
+
+    let mut sk = String::new();
+
+    file.read_to_string(&mut sk).expect("cant read..");
 
     if random_number%4==3
     {
-       
+        let sk1 = sk.clone();
         let handle1 = thread::spawn( move || {
 
-            handle_server(node_port_start+1+4);           
+            handle_server(node_port_start+1+4, sk1);           
             
     
         });
-
+        let sk2 = sk.clone();
         let handle2 = thread::spawn( move || {
 
-            handle_server(node_port_start+2+4);           
+            handle_server(node_port_start+2+4, sk2);           
             
     
         });
-    
+        let sk3 = sk.clone();
         let handle3 = thread::spawn(move || {
             
     
-            handle_server(node_port_start+3+4);
+            handle_server(node_port_start+3+4, sk3);
             
     
         });
@@ -151,25 +174,24 @@ pub fn initiate_node4(random_number: u32, node_port_start: u32) {
     }
     else
     {
-
+        let pubkeys1 = pubkeys.clone();
         let handle1 = thread::spawn( move || {
 
-            handle_client(node_port_start+1+4);          
+            handle_client(node_port_start+1+4, pubkeys1);          
             
     
         });
-
+        let pubkeys2 = pubkeys.clone();
         let handle2 = thread::spawn( move || {
 
-            handle_client(node_port_start+2+4);          
+            handle_client(node_port_start+2+4, pubkeys2);          
             
     
         });
-    
+        let pubkeys3 = pubkeys.clone();
         let handle3 = thread::spawn(move || {
-            
-    
-            handle_client(node_port_start+3+4);
+                
+            handle_client(node_port_start+3+4, pubkeys3);
             
     
         });
@@ -180,3 +202,22 @@ pub fn initiate_node4(random_number: u32, node_port_start: u32) {
     }
 }
 
+
+
+pub fn create_keys()
+{
+    // Use synthetic nonces
+    let nonce_gen = nonce::Synthetic::<Sha256, nonce::GlobalRng<ThreadRng>>::default();
+    let schnorr = Schnorr::<Sha256, _>::new(nonce_gen.clone());
+
+    // Generate your public/private key-pair
+    let keypair = schnorr.new_keypair(Scalar::random(&mut rand::thread_rng()));
+    
+    let message = Message::<Public>::plain("111", b"node1");
+    // Sign the message with our keypair
+    let signature = schnorr.sign(&keypair, message);
+    
+    println!("node4 {:?}", keypair);
+    println!("node4 {:?}", signature);
+
+}
